@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from jsondiff.engine.inventory import collect_files, make_labels
 
 
@@ -27,6 +29,23 @@ def test_duplicate_folder_names_fall_back_to_full_path(make_folder, tmp_path):
     labels = make_labels([sub1, sub2])
 
     assert labels == [str(sub1), str(sub2)]
+
+
+def test_unc_paths_survive_resolve_and_labeling():
+    """네트워크 경로(\\\\server\\share)가 경로 정규화에서 망가지지 않아야 한다.
+
+    실제 공유 없이도 확인 가능한 부분만 본다. resolve()가 UNC 접두어를 잃으면
+    드라이브 문자가 붙어 엉뚱한 로컬 경로가 된다.
+    """
+    unc = Path(r"\\fileserver\share\envs\dev")
+
+    assert str(unc.resolve()).startswith("\\\\")
+    assert make_labels([unc, Path(r"\\fileserver\share\envs\운영 서버")]) == ["dev", "운영 서버"]
+    # 서버만 다르고 폴더명이 같으면 전체 경로로 구분해야 한다
+    assert make_labels([Path(r"\\srv1\share\dev"), Path(r"\\srv2\share\dev")]) == [
+        r"\\srv1\share\dev",
+        r"\\srv2\share\dev",
+    ]
 
 
 def test_recursive_uses_relative_path(tmp_path):

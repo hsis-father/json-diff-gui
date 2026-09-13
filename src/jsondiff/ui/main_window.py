@@ -9,9 +9,11 @@ from PyQt5.QtCore import QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -21,9 +23,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from jsondiff import __version__
 from jsondiff.engine.models import FileReport
 from jsondiff.report.csv_export import write_csv
 from jsondiff.report.html import render_html
+from jsondiff.settings import Options, Session, load_settings, save_settings
 from jsondiff.ui.folder_list import FolderListWidget
 from jsondiff.ui.worker import CompareWorker
 
@@ -40,7 +44,7 @@ color:#6E7671; padding:40px;">
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("JSON Folder Diff")
+        self.setWindowTitle(f"JSON Folder Diff {__version__}")
         self.setAcceptDrops(True)
         self.resize(1200, 800)
         self.setMinimumSize(900, 600)
@@ -60,6 +64,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_folder_section())
         layout.addWidget(self._build_options_section())
         layout.addWidget(self._build_result_section(), stretch=1)
+
+        self._settings = load_settings()
+        self._reload_preset_combo()
+        self._apply_session(self._settings.last_session)
 
         self._update_run_enabled()
         self._show_html(PLACEHOLDER_HTML)
@@ -92,12 +100,34 @@ class MainWindow(QMainWindow):
         outer.addLayout(top)
 
         self.folder_list = FolderListWidget()
+        # 높이를 묶지 않으면 폴더 목록이 늘어나 결과 영역을 900x600에서 100px 밑으로 밀어낸다.
+        # 목록은 스크롤되므로 5~6줄만 보여도 충분하다.
+        self.folder_list.setMinimumHeight(70)
+        self.folder_list.setMaximumHeight(140)
         self.folder_list.folders_dropped.connect(self._add_folders)
         self.folder_list.model().rowsInserted.connect(lambda *_: self._update_run_enabled())
         self.folder_list.model().rowsRemoved.connect(lambda *_: self._update_run_enabled())
         outer.addWidget(self.folder_list)
 
+        outer.addLayout(self._build_preset_row())
         return box
+
+    def _build_preset_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("프리셋"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(200)
+        self.preset_combo.activated.connect(self._on_preset_selected)
+        row.addWidget(self.preset_combo)
+
+        save_btn = QPushButton("현재 설정을 프리셋으로 저장")
+        save_btn.clicked.connect(self._on_save_preset_clicked)
+        delete_btn = QPushButton("프리셋 삭제")
+        delete_btn.clicked.connect(self._on_delete_preset_clicked)
+        row.addWidget(save_btn)
+        row.addWidget(delete_btn)
+        row.addStretch(1)
+        return row
 
     def _on_add_folder_clicked(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "비교할 폴더 선택")
@@ -118,6 +148,93 @@ class MainWindow(QMainWindow):
                 continue
             self.folder_list.add_folder(resolved)
         self._update_run_enabled()
+
+    # ------------------------------------------------------------ 프리셋
+
+    def _current_session(self) -> Session:
+        return Session(
+            folders=[str(p) for p in self.folder_list.folder_paths()],
+            options=Options(
+                pattern=self.pattern_edit.text(),
+                recursive=self.recursive_check.isChecked(),
+                array_id_key=self.array_id_key_edit.text(),
+                ignore=self.ignore_edit.text(),
+                only_diff=self.only_diff_check.isChecked(),
+            ),
+        )
+
+    def _apply_session(self, session: Session) -> None:
+        self.folder_list.clear()
+        for folder in session.folders:
+            # 사라진 폴더도 목록에는 남긴다. 회색으로 표시되고 비교에서만 빠진다.
+            self.folder_list.add_folder(Path(folder))
+        self.folder_list.refresh_presence()
+
+        opts = session.options
+        self.pattern_edit.setText(opts.pattern)
+        self.recursive_check.setChecked(bool(opts.recursive))
+        self.array_id_key_edit.setText(opts.array_id_key)
+        self.ignore_edit.setText(opts.ignore)
+        self.only_diff_check.setChecked(bool(opts.only_diff))
+        self._update_run_enabled()
+
+    def _reload_preset_combo(self, select: str = "") -> None:
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItem("(프리셋 선택)")
+        for name in sorted(self._settings.presets):
+            self.preset_combo.addItem(name)
+        if select:
+            index = self.preset_combo.findText(select)
+            if index >= 0:
+                self.preset_combo.setCurrentIndex(index)
+        self.preset_combo.blockSignals(False)
+
+    def _on_preset_selected(self, index: int) -> None:
+        if index <= 0:  # 0번은 안내 항목
+            return
+        name = self.preset_combo.itemText(index)
+        session = self._settings.presets.get(name)
+        if session:
+            self._apply_session(session)
+
+    def _on_save_preset_clicked(self) -> None:
+        suggested = self.preset_combo.currentText() if self.preset_combo.currentIndex() > 0 else ""
+        name, ok = QInputDialog.getText(self, "프리셋 저장", "프리셋 이름", text=suggested)
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name in self._settings.presets:
+            answer = QMessageBox.question(
+                self, "프리셋 저장", f"'{name}' 프리셋을 덮어쓸까요?"
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._settings.presets[name] = self._current_session()
+        self._persist_settings()
+        self._reload_preset_combo(select=name)
+        self.status_label.setText(f"프리셋 '{name}' 저장됨")
+
+    def _on_delete_preset_clicked(self) -> None:
+        index = self.preset_combo.currentIndex()
+        if index <= 0:
+            QMessageBox.information(self, "프리셋 삭제", "삭제할 프리셋을 먼저 선택하세요.")
+            return
+        name = self.preset_combo.itemText(index)
+        answer = QMessageBox.question(self, "프리셋 삭제", f"'{name}' 프리셋을 삭제할까요?")
+        if answer != QMessageBox.Yes:
+            return
+        self._settings.presets.pop(name, None)
+        self._persist_settings()
+        self._reload_preset_combo()
+        self.status_label.setText(f"프리셋 '{name}' 삭제됨")
+
+    def _persist_settings(self) -> None:
+        # 설정 저장 실패로 프로그램이 죽지는 않게 한다. 콘솔이 없으니 상태 라벨로만 알린다.
+        try:
+            save_settings(self._settings)
+        except OSError as exc:
+            self.status_label.setText(f"설정을 저장하지 못했습니다: {exc}")
 
     # 창 전체도 드롭 대상 (SPEC-ui.md: 창 전체가 드롭 대상)
     def dragEnterEvent(self, event) -> None:
@@ -182,13 +299,18 @@ class MainWindow(QMainWindow):
         return box
 
     def _update_run_enabled(self) -> None:
-        count = self.folder_list.count()
-        if count < 2:
+        # 사라진 폴더는 세지 않는다. 프리셋을 복원하면 없는 폴더가 섞여 있을 수 있다.
+        total = self.folder_list.count()
+        usable = len(self.folder_list.existing_folder_paths())
+        missing = total - usable
+
+        if usable < 2:
             self.run_btn.setEnabled(False)
-            self.status_label.setText(f"폴더를 2개 이상 추가하세요 (현재 {count}개)")
+            self.status_label.setText(f"폴더를 2개 이상 추가하세요 (사용 가능 {usable}개)")
         else:
             self.run_btn.setEnabled(True)
-            self.status_label.setText(f"폴더 {count}개 준비됨")
+            note = f", 사라진 폴더 {missing}개 제외" if missing else ""
+            self.status_label.setText(f"폴더 {usable}개 준비됨{note}")
 
     # ------------------------------------------------------------ 결과
 
@@ -216,7 +338,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ 비교 실행
 
     def _on_run_clicked(self) -> None:
-        folders = self.folder_list.folder_paths()
+        # 사라진 폴더는 건너뛴다 (docs/SPEC-ui.md 프리셋 항목).
+        folders = self.folder_list.existing_folder_paths()
         ignore = [p.strip() for p in self.ignore_edit.text().split(",") if p.strip()]
 
         # 이전 결과를 먼저 버린다. 이번 실행이 실패해도 저장 버튼이 옛 결과를 가리키면 안 된다.
@@ -256,6 +379,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_worker()
+        self._settings.last_session = self._current_session()
+        self._persist_settings()
         shutil.rmtree(self._view_dir, ignore_errors=True)
         super().closeEvent(event)
 

@@ -10,25 +10,13 @@ import pytest
 
 pytest.importorskip("PyQt5.QtWebEngineWidgets")
 
-# QtWebEngineWidgets는 QApplication보다 먼저 import 되어 있어야 한다.
-from PyQt5.QtWidgets import QApplication
-
-from jsondiff.ui.main_window import MainWindow
-
 TWO_MB = 2 * 1024 * 1024
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    yield app
-
-
 @pytest.fixture
-def window(qapp):
-    win = MainWindow()
-    yield win
-    win.close()
+def window(make_window, tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    return make_window()
 
 
 def test_large_report_is_not_truncated_by_data_url_limit(window):
@@ -42,11 +30,10 @@ def test_large_report_is_not_truncated_by_data_url_limit(window):
     assert window.result_view.page().requestedUrl().isLocalFile()
 
 
-def test_view_file_is_cleaned_up_on_close(qapp):
-    win = MainWindow()
-    view_dir = win._view_dir
+def test_view_file_is_cleaned_up_on_close(window):
+    view_dir = window._view_dir
     assert view_dir.exists()
 
-    win.close()
+    window.close()
 
     assert not view_dir.exists()
