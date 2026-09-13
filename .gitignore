@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# 로컬에서 만든 리포트/샘플 산출물
+*.html
+!docs/**/*.html
+sample/*.csv

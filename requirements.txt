@@ -1,0 +1,11 @@
+# GUI
+# PyQt5는 win32(32비트) 휠도 배포되어 32비트 Python 환경에서도 설치·검증할 수 있다.
+PyQt5>=5.15
+PyQtWebEngine>=5.15
+
+# 빌드
+pyinstaller>=6.3
+
+# 개발/테스트 (엔진 자체는 표준 라이브러리만 사용한다)
+pytest>=8.0
+ruff>=0.4
